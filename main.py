@@ -10,6 +10,7 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, BotCommand
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = "7714657648:AAH1zEV5p2gHHowtYnKHkMnIYX88UirHeGs"
+ADMIN_ID = 123456789  # ОБЯЗАТЕЛЬНО ПОСТАВЬ СВОЙ ID (узнай в @userinfobot)
 DB_FILE = "gift_db.json"
 PERCENT_FEE = 0.15      
 GIFT_PRICE = 50         
@@ -70,9 +71,7 @@ async def cmd_help(message: types.Message):
         "1️⃣ Найти ID подарков: @GiftExcuseId\n"
         "2️⃣ Пополнить баланс: `/topup 100` (Комиссия: 15%)\n"
         "3️⃣ Отправить подарок (формат):\n"
-        "`ID_пользователя ID_подарка Сообщение` \n\n"
-        "💡 *Для анонимной отправки:* \n"
-        "`анонимно ID_пользователя ID_подарка Сообщение`"
+        "`ID_пользователя ID_подарка Сообщение`"
     )
     await message.answer(instruction, parse_mode="Markdown")
 
@@ -81,8 +80,15 @@ async def cmd_profile(message: types.Message):
     db = load_db()
     uid = str(message.from_user.id)
     user = db.get(uid, {"balance": 0, "sent_count": 0})
+    
+    # Для тебя (админа) показываем статус готовности
+    if int(uid) == ADMIN_ID:
+        balance_text = "Готов к отправке (используются 50 Stars)"
+    else:
+        balance_text = f"{user['balance']} Stars"
+    
     await message.answer(
-        f"👤 **Личный кабинет**\n\n🆔 ID: `{uid}`\n💰 Баланс: **{user['balance']} Stars**\n🎁 Отправлено: {user['sent_count']}",
+        f"👤 **Личный кабинет**\n\n🆔 ID: `{uid}`\n💰 Баланс: **{balance_text}**\n🎁 Отправлено: {user['sent_count']}",
         parse_mode="Markdown"
     )
 
@@ -114,20 +120,13 @@ async def success_pay(message: types.Message):
     save_db(db)
     await message.answer(f"✅ Баланс пополнен на **{amount} Stars**!")
 
-# --- ЛОГИКА ОТПРАВКИ ---
+# --- УПРОЩЕННАЯ ЛОГИКА ОТПРАВКИ (БЕЗ АНОНИМНОСТИ) ---
 @dp.message(F.text & ~F.text.startswith('/'))
 async def handle_gift_sending(message: types.Message):
-    raw_text = message.text.strip()
-    parts = raw_text.split()
-    if not parts: return
-
-    is_anon = False
-    # Проверяем на анонимность (учитываем любой регистр)
-    if parts[0].lower() in ["анонимно", "anon"]:
-        is_anon = True
-        parts = parts[1:]
-
-    if len(parts) < 2: return
+    parts = message.text.strip().split()
+    
+    if len(parts) < 2:
+        return # Игнорируем обычный текст
 
     target_input = parts[0]
     gift_id = parts[1]
@@ -137,31 +136,35 @@ async def handle_gift_sending(message: types.Message):
     uid = str(message.from_user.id)
     init_user(db, uid)
 
-    if db[uid]["balance"] < GIFT_PRICE:
-        return await message.answer(f"❌ Недостаточно Stars! Баланс: {db[uid]['balance']}")
+    # Проверка баланса: пропускаем для ADMIN_ID
+    if int(uid) != ADMIN_ID and db[uid]["balance"] < GIFT_PRICE:
+        return await message.answer(f"❌ Недостаточно Stars! Твой баланс: {db[uid]['balance']}")
 
     target_id = await resolve_id(target_input)
     if not target_id:
-        return await message.answer("❌ Пользователь не найден.")
+        return await message.answer("❌ Пользователь не найден. Введите @username или ID.")
 
     try:
-        # Прямой вызов с исправленным параметром
+        # Отправка (is_anonymous всегда False)
         await bot.send_gift(
             user_id=target_id,
             gift_id=gift_id,
             text=gift_msg,
-            is_anonymous=is_anon
+            is_anonymous=False
         )
         
-        db[uid]["balance"] -= GIFT_PRICE
+        # Списываем баланс только обычным пользователям
+        if int(uid) != ADMIN_ID:
+            db[uid]["balance"] -= GIFT_PRICE
+            
         db[uid]["sent_count"] += 1
-        prefix = "🕵️ [Анон]" if is_anon else "🎁"
-        db[uid]["history"].append(f"{prefix} {gift_id} -> {target_input}")
+        db[uid]["history"].append(f"🎁 {gift_id} -> {target_input}")
         save_db(db)
         
-        await message.answer(f"✅ Успешно отправлено! {'(Анонимно)' if is_anon else ''}")
+        await message.answer(f"✅ Подарок успешно отправлен!")
+        
     except Exception as e:
-        await message.answer(f"❌ Ошибка API: {e}")
+        await message.answer(f"❌ Ошибка API: {e}\n(Убедись, что на балансе аккаунта есть 50 Stars)")
 
 async def main():
     await set_commands(bot)
