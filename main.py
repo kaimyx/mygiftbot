@@ -7,64 +7,51 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import LabeledPrice, PreCheckoutQuery, BotCommand
 
-# Настройка логирования для Railway
+# Логирование
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
-# ТОКЕН
 TOKEN = "7714657648:AAH1zEV5p2gHHowtYnKHkMnIYX88UirHeGs"
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 DB_FILE = "balances.json"
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ ---
+# Настройка комиссии (можно поменять цифру 10 на любую другую)
+FEE = 10 
+
 def load_db():
     if not os.path.exists(DB_FILE):
-        with open(DB_FILE, "w") as f:
-            json.dump({}, f)
+        with open(DB_FILE, "w") as f: json.dump({}, f)
         return {}
     try:
-        with open(DB_FILE, "r") as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"Ошибка чтения базы: {e}")
-        return {}
+        with open(DB_FILE, "r") as f: return json.load(f)
+    except: return {}
 
 def save_db(data):
     try:
-        with open(DB_FILE, "w") as f:
-            json.dump(data, f)
-    except Exception as e:
-        logger.error(f"Ошибка записи базы: {e}")
+        with open(DB_FILE, "w") as f: json.dump(data, f)
+    except: pass
 
-# --- НАСТРОЙКА МЕНЮ ---
 async def set_commands(bot: Bot):
     commands = [
-        BotCommand(command="start", description="Запустить бота"),
-        BotCommand(command="topup", description="Пополнить баланс"),
-        BotCommand(command="balance", description="Проверить баланс"),
+        BotCommand(command="start", description="Запустить"),
+        BotCommand(command="topup", description="Пополнить"),
+        BotCommand(command="balance", description="Баланс"),
         BotCommand(command="help", description="Инструкция")
     ]
     await bot.set_my_commands(commands)
 
-# --- ОБРАБОТЧИКИ КОМАНД ---
-
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer(
-        "🚀 **Бот активирован!**\n"
-        "Все функции доступны через меню команд [/].",
-        parse_mode="Markdown"
-    )
+    await message.answer("🚀 **Бот активирован!**\nВсе функции доступны через меню команд [/].", parse_mode="Markdown")
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     help_text = (
         "📖 **Инструкция:**\n\n"
-        "1️⃣ Найти ID подарков можно тут: @GiftChangesIDs\n"
-        "2️⃣ Пополнить баланс бота: `/topup 50`\n"
-        "3️⃣ Отправить подарок другу (формат):\n"
+        "1️⃣ Найти ID подарков: @GiftChangesIDs\n"
+        "2️⃣ Пополнить баланс: `/topup 50` (Комиссия: 10 ⭐)\n"
+        "3️⃣ Отправить подарок (формат):\n"
         "`ID_пользователя ID_подарка Сообщение`"
     )
     await message.answer(help_text, parse_mode="Markdown")
@@ -72,31 +59,31 @@ async def cmd_help(message: types.Message):
 @dp.message(Command("balance"))
 async def cmd_balance(message: types.Message):
     db = load_db()
-    user_id = str(message.from_user.id)
-    balance = db.get(user_id, 0)
-    await message.answer(f"💰 Ваш текущий баланс: **{balance} Stars**", parse_mode="Markdown")
+    balance = db.get(str(message.from_user.id), 0)
+    await message.answer(f"💰 Ваш баланс: **{balance} Stars**", parse_mode="Markdown")
 
 @dp.message(Command("topup"))
 async def cmd_topup(message: types.Message):
     parts = message.text.split()
     if len(parts) < 2 or not parts[1].isdigit():
-        return await message.answer("⚠️ Введите сумму пополнения, например: `/topup 50`", parse_mode="Markdown")
+        return await message.answer("⚠️ Пример: `/topup 50`", parse_mode="Markdown")
     
-    amount = int(parts[1])
+    user_amount = int(parts[1])
+    # ДОБАВЛЕНИЕ КОМИССИИ
+    total_amount = user_amount + FEE 
+    
     try:
         await bot.send_invoice(
             chat_id=message.chat.id,
-            title="Пополнение Stars",
-            description=f"Покупка {amount} Telegram Stars",
-            payload="stars_topup",
+            title="Пополнение баланса",
+            description=f"К зачислению: {user_amount} ⭐ (Сервисный сбор: {FEE} ⭐)",
+            payload=f"topup_{user_amount}", # Сохраняем чистую сумму для зачисления
             currency="XTR",
-            prices=[LabeledPrice(label="Stars", amount=amount)]
+            prices=[LabeledPrice(label=f"Stars (+{FEE} комиссия)", amount=total_amount)]
         )
     except Exception as e:
-        logger.error(f"Ошибка создания счета: {e}")
-        await message.answer("❌ Ошибка при создании счета. Попробуйте позже.")
+        await message.answer(f"❌ Ошибка: {e}")
 
-# --- ПЛАТЕЖИ ---
 @dp.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(query.id, ok=True)
@@ -105,38 +92,36 @@ async def pre_checkout(query: PreCheckoutQuery):
 async def success_pay(message: types.Message):
     db = load_db()
     user_id = str(message.from_user.id)
-    amount = message.successful_payment.total_amount
-    db[user_id] = db.get(user_id, 0) + amount
+    
+    # Извлекаем сумму зачисления из payload (чтобы не зачислять комиссию на баланс)
+    payload = message.successful_payment.invoice_payload
+    amount_to_add = int(payload.split('_')[1])
+    
+    db[user_id] = db.get(user_id, 0) + amount_to_add
     save_db(db)
-    await message.answer(f"✅ Баланс успешно пополнен на **{amount} Stars**!")
+    await message.answer(f"✅ Оплата прошла! На баланс зачислено **{amount_to_add} Stars**.")
 
-# --- ОТПРАВКА ПОДАРКОВ ---
 @dp.message(F.text & ~F.text.startswith('/'))
-async def handle_gift_request(message: types.Message):
+async def handle_gift(message: types.Message):
     parts = message.text.split(maxsplit=2)
     if len(parts) >= 2 and parts[0].isdigit():
-        target_id = int(parts[0])
-        gift_id = parts[1]
-        text = parts[2] if len(parts) > 2 else ""
-        
         try:
-            # API метод для отправки подарка
-            await bot.send_gift(user_id=target_id, gift_id=gift_id, text=text)
-            await message.answer(f"🎁 Подарок `{gift_id}` отправлен пользователю `{target_id}`!")
+            await bot.send_gift(
+                user_id=int(parts[0]), 
+                gift_id=parts[1], 
+                text=parts[2] if len(parts) > 2 else ""
+            )
+            await message.answer(f"🎁 Подарок `{parts[1]}` отправлен пользователю `{parts[0]}`!")
         except Exception as e:
-            await message.answer(f"❌ Ошибка отправки: {e}\n(Проверьте баланс бота и корректность данных)")
+            await message.answer(f"❌ Ошибка API: {e}")
     else:
-        await message.answer("ℹ️ Для отправки подарка используйте формат из /help")
+        await message.answer("ℹ️ Формат отправки: `ID Подарок Сообщение` (см. /help)")
 
-# --- ЗАПУСК ---
 async def main():
-    try:
-        await set_commands(bot)
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Бот запущен и прослушивает сообщения...")
-        await dp.start_polling(bot)
-    except Exception as e:
-        logger.critical(f"Критическая ошибка: {e}")
+    await set_commands(bot)
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Бот запущен...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
