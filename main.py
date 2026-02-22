@@ -11,8 +11,8 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, BotCommand
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = "7714657648:AAH1zEV5p2gHHowtYnKHkMnIYX88UirHeGs"
 DB_FILE = "gift_db.json"
-PERCENT_FEE = 0.15      # 15% комиссия
-GIFT_PRICE = 50         # Цена отправки одного подарка (в Stars)
+PERCENT_FEE = 0.15      
+GIFT_PRICE = 50         
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=TOKEN)
@@ -36,11 +36,14 @@ def init_user(db, user_id):
     return db
 
 async def resolve_id(text):
+    text = text.strip()
     if text.isdigit(): return int(text)
-    try:
-        chat = await bot.get_chat(text if text.startswith("@") else f"@{text}")
-        return chat.id
-    except: return None
+    if text.startswith("@"):
+        try:
+            chat = await bot.get_chat(text)
+            return chat.id
+        except: return None
+    return None
 
 # --- МЕНЮ КОМАНД ---
 async def set_commands(bot: Bot):
@@ -52,8 +55,6 @@ async def set_commands(bot: Bot):
         BotCommand(command="help", description="Инструкция 📖")
     ]
     await bot.set_my_commands(commands)
-
-# --- ОБРАБОТЧИКИ ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -80,43 +81,25 @@ async def cmd_profile(message: types.Message):
     db = load_db()
     uid = str(message.from_user.id)
     user = db.get(uid, {"balance": 0, "sent_count": 0})
-    
-    text = (
-        f"👤 **Личный кабинет**\n\n"
-        f"🆔 Твой ID: `{uid}`\n"
-        f"💰 Баланс: **{user['balance']} Stars**\n"
-        f"🎁 Отправлено подарков: {user['sent_count']}\n"
-        f"🎫 Цена отправки: {GIFT_PRICE} ⭐"
+    await message.answer(
+        f"👤 **Личный кабинет**\n\n🆔 ID: `{uid}`\n💰 Баланс: **{user['balance']} Stars**\n🎁 Отправлено: {user['sent_count']}",
+        parse_mode="Markdown"
     )
-    await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("history"))
 async def cmd_history(message: types.Message):
     db = load_db()
     history = db.get(str(message.from_user.id), {}).get("history", [])
-    if not history:
-        return await message.answer("📜 Твоя история пуста.")
-    
-    text = "📜 **Последние 10 подарков:**\n\n" + "\n".join(history[-10:])
-    await message.answer(text, parse_mode="Markdown")
+    if not history: return await message.answer("📜 Твоя история пуста.")
+    await message.answer("📜 **Последние подарки:**\n\n" + "\n".join(history[-10:]), parse_mode="Markdown")
 
 @dp.message(Command("topup"))
 async def cmd_topup(message: types.Message):
     parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        return await message.answer("⚠️ Пример: `/topup 100`")
-    
+    if len(parts) < 2 or not parts[1].isdigit(): return await message.answer("⚠️ Пример: `/topup 100`")
     amount = int(parts[1])
     total = amount + math.ceil(amount * PERCENT_FEE)
-    
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Пополнение баланса",
-        description=f"Зачисление: {amount} ⭐",
-        payload=f"up_{amount}",
-        currency="XTR",
-        prices=[LabeledPrice(label="Stars", amount=total)]
-    )
+    await bot.send_invoice(message.chat.id, title="Пополнение Stars", description=f"Зачисление: {amount} ⭐", payload=f"up_{amount}", currency="XTR", prices=[LabeledPrice(label="Stars", amount=total)])
 
 @dp.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
@@ -134,37 +117,39 @@ async def success_pay(message: types.Message):
 # --- ЛОГИКА ОТПРАВКИ ---
 @dp.message(F.text & ~F.text.startswith('/'))
 async def handle_gift_sending(message: types.Message):
-    text = message.text.strip()
+    raw_text = message.text.strip()
+    parts = raw_text.split()
+    if not parts: return
+
     is_anon = False
-    
-    if text.lower().startswith("анонимно"):
+    # Проверяем на анонимность (учитываем любой регистр)
+    if parts[0].lower() in ["анонимно", "anon"]:
         is_anon = True
-        parts = text.split(maxsplit=3)[1:]
-    else:
-        parts = text.split(maxsplit=2)
+        parts = parts[1:]
 
-    if len(parts) < 2:
-        return
+    if len(parts) < 2: return
 
-    target_input, gift_id = parts[0], parts[1]
-    gift_msg = parts[2] if len(parts) > 2 else ""
+    target_input = parts[0]
+    gift_id = parts[1]
+    gift_msg = " ".join(parts[2:]) if len(parts) > 2 else ""
     
     db = load_db()
     uid = str(message.from_user.id)
     init_user(db, uid)
 
     if db[uid]["balance"] < GIFT_PRICE:
-        return await message.answer(f"❌ Недостаточно Stars! Цена: {GIFT_PRICE}. Баланс: {db[uid]['balance']}")
+        return await message.answer(f"❌ Недостаточно Stars! Баланс: {db[uid]['balance']}")
 
     target_id = await resolve_id(target_input)
     if not target_id:
         return await message.answer("❌ Пользователь не найден.")
 
     try:
+        # Прямой вызов с исправленным параметром
         await bot.send_gift(
-            user_id=target_id, 
-            gift_id=gift_id, 
-            text=gift_msg, 
+            user_id=target_id,
+            gift_id=gift_id,
+            text=gift_msg,
             is_anonymous=is_anon
         )
         
@@ -174,7 +159,7 @@ async def handle_gift_sending(message: types.Message):
         db[uid]["history"].append(f"{prefix} {gift_id} -> {target_input}")
         save_db(db)
         
-        await message.answer(f"✅ Успешно отправлено! {'(Анонимно)' if is_anon else ''}\nОстаток: {db[uid]['balance']} ⭐")
+        await message.answer(f"✅ Успешно отправлено! {'(Анонимно)' if is_anon else ''}")
     except Exception as e:
         await message.answer(f"❌ Ошибка API: {e}")
 
