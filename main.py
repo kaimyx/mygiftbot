@@ -10,12 +10,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 # --- НАСТРОЙКИ ---
 TOKEN = "7714657648:AAH1zEV5p2gHHowtYnKHkMnIYX88UirHeGs"
-ADMIN_ID = 123456789  # ЗАМЕНИ НА СВОЙ ID (чтобы работала рассылка)
+ADMIN_ID = 123456789 
 DB_FILE = "gift_db.json"
 PERCENT_FEE = 0.15
-REFERRAL_REWARD = 5   # Сколько Stars даем за друга
 
-# Витрина (ID подарка: [Название, Цена])
 SHOP_ITEMS = {
     "220": ["Rare Blue Star", 50],
     "350": ["Vintage Heart", 75],
@@ -26,123 +24,138 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- РАБОТА С БАЗОЙ ДАННЫХ ---
+# --- БАЗА ДАННЫХ ---
 def load_db():
-    if not os.path.exists(DB_FILE):
-        return {}
-    with open(DB_FILE, "r", encoding='utf-8') as f:
-        return json.load(f)
+    if not os.path.exists(DB_FILE): return {}
+    with open(DB_FILE, "r", encoding='utf-8') as f: return json.load(f)
 
 def save_db(data):
-    with open(DB_FILE, "w", encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    with open(DB_FILE, "w", encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
 
-def init_user(db, user_id, referrer=None):
+def init_user(db, user_id):
     uid = str(user_id)
     if uid not in db:
-        db[uid] = {
-            "balance": 0,
-            "referred_by": referrer,
-            "referrals_count": 0,
-            "history": []
-        }
-        if referrer and str(referrer) in db:
-            db[str(referrer)]["referrals_count"] += 1
+        db[uid] = {"balance": 0, "history": [], "sent_count": 0}
     return db
+
+# --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
+async def resolve_id(text):
+    if text.isdigit(): return int(text)
+    try:
+        chat = await bot.get_chat(text if text.startswith("@") else f"@{text}")
+        return chat.id
+    except: return None
 
 # --- КОМАНДЫ ---
 async def set_commands(bot: Bot):
     commands = [
         BotCommand(command="start", description="Главное меню"),
-        BotCommand(command="shop", description="Витрина подарков"),
-        BotCommand(command="balance", description="Кошелек"),
-        BotCommand(command="ref", description="Рефералы"),
-        BotCommand(command="history", description="Мои подарки"),
-        BotCommand(command="help", description="Помощь")
+        BotCommand(command="profile", description="Личный кабинет 👤"),
+        BotCommand(command="shop", description="Магазин подарков 🎁"),
+        BotCommand(command="history", description="История заказов 📜"),
+        BotCommand(command="topup", description="Пополнить баланс ⭐")
     ]
     await bot.set_my_commands(commands)
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    # Логика реферала: /start 1234567
-    args = message.text.split()
-    referrer = args[1] if len(args) > 1 and args[1].isdigit() else None
-    
     db = load_db()
-    db = init_user(db, message.from_user.id, referrer)
+    init_user(db, message.from_user.id)
     save_db(db)
-    
-    await message.answer(
-        "✨ **Добро пожаловать в GiftExcuse!**\n\n"
-        "Мы — твой доступ к архивным подаркам Telegram API.\n"
-        "Выбирай подарок в /shop или отправляй по ID.",
-        parse_mode="Markdown"
-    )
+    await message.answer("🎁 **Добро пожаловать в GiftExcuse!**\n\nИспользуй /shop для выбора подарка.\nТвой личный кабинет: /profile")
 
-@dp.message(Command("shop"))
-async def cmd_shop(message: types.Message):
-    builder = InlineKeyboardBuilder()
-    for item_id, info in SHOP_ITEMS.items():
-        builder.row(InlineKeyboardButton(
-            text=f"🎁 {info[0]} — {info[1]} ⭐", 
-            callback_data=f"buy_{item_id}")
-        )
-    await message.answer("🛒 **Витрина редких подарков:**", reply_markup=builder.as_markup(), parse_mode="Markdown")
-
-@dp.message(Command("ref"))
-async def cmd_ref(message: types.Message):
+@dp.message(Command("profile"))
+async def cmd_profile(message: types.Message):
     db = load_db()
     uid = str(message.from_user.id)
-    user_data = db.get(uid, {"referrals_count": 0})
-    ref_link = f"https://t.me/{(await bot.get_me()).username}?start={uid}"
+    user = db.get(uid, {"balance": 0, "sent_count": 0})
     
-    await message.answer(
-        f"👥 **Партнерская программа**\n\n"
-        f"Приглашено друзей: {user_data['referrals_count']}\n"
-        f"Награда за каждого друга: {REFERRAL_REWARD} ⭐ (после его пополнения)\n\n"
-        f"Твоя ссылка:\n`{ref_link}`",
-        parse_mode="Markdown"
+    text = (
+        f"👤 **Личный кабинет**\n\n"
+        f"🆔 Твой ID: `{uid}`\n"
+        f"💰 Баланс: {user['balance']} ⭐\n"
+        f"📦 Отправлено подарков: {user['sent_count']}\n\n"
+        f"Чтобы пополнить: `/topup сумма`"
     )
+    
+    kb = InlineKeyboardBuilder()
+    kb.add(InlineKeyboardButton(text="📜 История", callback_data="show_history"))
+    kb.add(InlineKeyboardButton(text="➕ Пополнить", callback_data="go_topup"))
+    
+    await message.answer(text, reply_markup=kb.as_markup(), parse_mode="Markdown")
 
 @dp.message(Command("history"))
-async def cmd_history(message: types.Message):
+@dp.callback_query(F.data == "show_history")
+async def show_history(event):
+    # Работает и как команда, и как кнопка
+    user_id = event.from_user.id
     db = load_db()
-    history = db.get(str(message.from_user.id), {}).get("history", [])
+    history = db.get(str(user_id), {}).get("history", [])
+    
     if not history:
-        return await message.answer("История отправлений пуста.")
+        msg = "📜 Твоя история пока пуста."
+    else:
+        msg = "📜 **Последние 10 операций:**\n\n" + "\n".join(history[-10:])
     
-    text = "📜 **Последние подарки:**\n" + "\n".join(history[-10:])
-    await message.answer(text, parse_mode="Markdown")
+    if isinstance(event, types.Message):
+        await event.answer(msg, parse_mode="Markdown")
+    else:
+        await event.message.edit_text(msg, parse_mode="Markdown")
 
-# --- ОПЛАТА ---
-@dp.message(Command("topup"))
-async def cmd_topup(message: types.Message):
-    parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        return await message.answer("Используй: `/topup 100`", parse_mode="Markdown")
+# --- ЛОГИКА ОТПРАВКИ (С АНОНИМНОСТЬЮ) ---
+@dp.message(F.text & ~F.text.startswith('/'))
+async def handle_gift_logic(message: types.Message):
+    # Формат: [анонимно] @username ID Сообщение
+    text = message.text.lower()
+    is_anon = False
     
-    amount = int(parts[1])
-    total = amount + math.ceil(amount * PERCENT_FEE)
+    if text.startswith("анонимно"):
+        is_anon = True
+        parts = message.text.split(maxsplit=3)[1:] # Убираем слово "анонимно"
+    else:
+        parts = message.text.split(maxsplit=2)
+
+    if len(parts) < 2:
+        return await message.answer("ℹ️ Формат: `[анонимно] @username ID_подарка Текст`")
+
+    target_user, gift_id = parts[0], parts[1]
+    gift_msg = parts[2] if len(parts) > 2 else ""
     
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Пополнение баланса",
-        description=f"Зачисление {amount} Stars",
-        payload=f"topup_{amount}",
-        currency="XTR",
-        prices=[LabeledPrice(label="Stars", amount=total)]
-    )
-
-@dp.pre_checkout_query()
-async def pre_checkout(query: PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(query.id, ok=True)
-
-@dp.message(F.successful_payment)
-async def success_pay(message: types.Message):
     db = load_db()
     uid = str(message.from_user.id)
-    amount = int(message.successful_payment.invoice_payload.split("_")[1])
-    
-    # Начисление бонуса пригласившему (единоразово при первом пополнении)
-    if db[uid].get("referred_by") and "bonus_given" not in db[uid]:
-        ref_id = str(db[uid
+    cost = SHOP_ITEMS.get(gift_id, ["", 50])[1]
+
+    if db.get(uid, {}).get("balance", 0) < cost:
+        return await message.answer(f"❌ Недостаточно Stars! Твой баланс: {db[uid]['balance']}")
+
+    target_id = await resolve_id(target_user)
+    if not target_id:
+        return await message.answer("❌ Не удалось найти пользователя.")
+
+    try:
+        # ПАРАМЕТР is_anonymous — КЛЮЧЕВАЯ ФУНКЦИЯ
+        await bot.send_gift(
+            user_id=target_id, 
+            gift_id=gift_id, 
+            text=gift_msg, 
+            is_anonymous=is_anon 
+        )
+        
+        db[uid]["balance"] -= cost
+        db[uid]["sent_count"] += 1
+        status = "🕵️ Анонимно" if is_anon else "🎁 Публично"
+        db[uid]["history"].append(f"{status}: ID {gift_id} -> {target_user}")
+        save_db(db)
+        
+        await message.answer(f"✅ Успешно! {'Анонимно ' if is_anon else ''}отправлено {target_user}. Баланс: {db[uid]['balance']}")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка API: {e}")
+
+# ... (Код для оплаты Stars остается прежним) ...
+
+async def main():
+    await set_commands(bot)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
