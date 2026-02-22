@@ -3,11 +3,12 @@ import logging
 import json
 import os
 import sys
+import math
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import LabeledPrice, PreCheckoutQuery, BotCommand
 
-# Логирование
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
@@ -16,8 +17,8 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 DB_FILE = "balances.json"
 
-# Настройка комиссии (можно поменять цифру 10 на любую другую)
-FEE = 10 
+# ПРОЦЕНТ КОМИССИИ (15%)
+PERCENT_FEE = 0.15 
 
 def load_db():
     if not os.path.exists(DB_FILE):
@@ -50,7 +51,7 @@ async def cmd_help(message: types.Message):
     help_text = (
         "📖 **Инструкция:**\n\n"
         "1️⃣ Найти ID подарков: @GiftChangesIDs\n"
-        "2️⃣ Пополнить баланс: `/topup 50` (Комиссия: 10 ⭐)\n"
+        "2️⃣ Пополнить баланс: `/topup 100` (Комиссия: 15%)\n"
         "3️⃣ Отправить подарок (формат):\n"
         "`ID_пользователя ID_подарка Сообщение`"
     )
@@ -66,23 +67,26 @@ async def cmd_balance(message: types.Message):
 async def cmd_topup(message: types.Message):
     parts = message.text.split()
     if len(parts) < 2 or not parts[1].isdigit():
-        return await message.answer("⚠️ Пример: `/topup 50`", parse_mode="Markdown")
+        return await message.answer("⚠️ Пример: `/topup 100`", parse_mode="Markdown")
     
     user_amount = int(parts[1])
-    # ДОБАВЛЕНИЕ КОМИССИИ
-    total_amount = user_amount + FEE 
+    
+    # РАСЧЕТ КОМИССИИ 15% (округляем в большую сторону)
+    fee_amount = math.ceil(user_amount * PERCENT_FEE)
+    total_to_pay = user_amount + fee_amount
     
     try:
         await bot.send_invoice(
             chat_id=message.chat.id,
-            title="Пополнение баланса",
-            description=f"К зачислению: {user_amount} ⭐ (Сервисный сбор: {FEE} ⭐)",
-            payload=f"topup_{user_amount}", # Сохраняем чистую сумму для зачисления
+            title="Пополнение Stars",
+            description=f"Зачисление: {user_amount} ⭐\nКомиссия сервиса (15%): {fee_amount} ⭐",
+            payload=f"topup_{user_amount}",
             currency="XTR",
-            prices=[LabeledPrice(label=f"Stars (+{FEE} комиссия)", amount=total_amount)]
+            prices=[LabeledPrice(label=f"Stars + Комиссия", amount=total_to_pay)]
         )
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        logger.error(f"Ошибка инвойса: {e}")
+        await message.answer(f"❌ Ошибка создания счета.")
 
 @dp.pre_checkout_query()
 async def pre_checkout(query: PreCheckoutQuery):
@@ -93,7 +97,7 @@ async def success_pay(message: types.Message):
     db = load_db()
     user_id = str(message.from_user.id)
     
-    # Извлекаем сумму зачисления из payload (чтобы не зачислять комиссию на баланс)
+    # Берем чистую сумму из payload (сколько пользователь заказывал изначально)
     payload = message.successful_payment.invoice_payload
     amount_to_add = int(payload.split('_')[1])
     
@@ -120,7 +124,7 @@ async def handle_gift(message: types.Message):
 async def main():
     await set_commands(bot)
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Бот запущен...")
+    logger.info("Бот запущен с комиссией 15%...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
