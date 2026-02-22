@@ -10,7 +10,7 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, BotCommand
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = "7714657648:AAH1zEV5p2gHHowtYnKHkMnIYX88UirHeGs"
-ADMIN_ID = 123456789  # ОБЯЗАТЕЛЬНО ПОСТАВЬ СВОЙ ID (узнай в @userinfobot)
+ADMIN_ID = 123456789  # ОБЯЗАТЕЛЬНО ПОСТАВЬ СВОЙ ID
 DB_FILE = "gift_db.json"
 PERCENT_FEE = 0.15      
 GIFT_PRICE = 50         
@@ -50,6 +50,7 @@ async def resolve_id(text):
 async def set_commands(bot: Bot):
     commands = [
         BotCommand(command="start", description="Запустить бота"),
+        BotCommand(command="balance", description="Мой баланс 💰"),
         BotCommand(command="profile", description="Личный кабинет 👤"),
         BotCommand(command="history", description="История подарков 📜"),
         BotCommand(command="topup", description="Пополнить баланс ⭐"),
@@ -75,22 +76,38 @@ async def cmd_help(message: types.Message):
     )
     await message.answer(instruction, parse_mode="Markdown")
 
+# --- ВКЛАДКА БАЛАНСА ---
+@dp.message(Command("balance"))
+async def cmd_balance(message: types.Message):
+    db = load_db()
+    uid = str(message.from_user.id)
+    user = db.get(uid, {"balance": 0})
+    
+    if int(uid) == ADMIN_ID:
+        text = "💰 **Ваш баланс:**\nИспользуются 50 Stars на аккаунте (Admin Access)."
+    else:
+        text = f"💰 **Ваш баланс:** {user['balance']} Stars"
+    
+    await message.answer(text, parse_mode="Markdown")
+
 @dp.message(Command("profile"))
 async def cmd_profile(message: types.Message):
     db = load_db()
     uid = str(message.from_user.id)
     user = db.get(uid, {"balance": 0, "sent_count": 0})
     
-    # Для тебя (админа) показываем статус готовности
     if int(uid) == ADMIN_ID:
-        balance_text = "Готов к отправке (используются 50 Stars)"
+        balance_info = "Готов (Admin)"
     else:
-        balance_text = f"{user['balance']} Stars"
+        balance_info = f"{user['balance']} Stars"
     
-    await message.answer(
-        f"👤 **Личный кабинет**\n\n🆔 ID: `{uid}`\n💰 Баланс: **{balance_text}**\n🎁 Отправлено: {user['sent_count']}",
-        parse_mode="Markdown"
+    text = (
+        f"👤 **Личный кабинет**\n\n"
+        f"🆔 ID: `{uid}`\n"
+        f"💰 Баланс: **{balance_info}**\n"
+        f"🎁 Отправлено: {user['sent_count']}"
     )
+    await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("history"))
 async def cmd_history(message: types.Message):
@@ -120,51 +137,33 @@ async def success_pay(message: types.Message):
     save_db(db)
     await message.answer(f"✅ Баланс пополнен на **{amount} Stars**!")
 
-# --- УПРОЩЕННАЯ ЛОГИКА ОТПРАВКИ (БЕЗ АНОНИМНОСТИ) ---
 @dp.message(F.text & ~F.text.startswith('/'))
 async def handle_gift_sending(message: types.Message):
     parts = message.text.strip().split()
-    
-    if len(parts) < 2:
-        return # Игнорируем обычный текст
+    if len(parts) < 2: return 
 
-    target_input = parts[0]
-    gift_id = parts[1]
+    target_input, gift_id = parts[0], parts[1]
     gift_msg = " ".join(parts[2:]) if len(parts) > 2 else ""
     
     db = load_db()
     uid = str(message.from_user.id)
     init_user(db, uid)
 
-    # Проверка баланса: пропускаем для ADMIN_ID
     if int(uid) != ADMIN_ID and db[uid]["balance"] < GIFT_PRICE:
-        return await message.answer(f"❌ Недостаточно Stars! Твой баланс: {db[uid]['balance']}")
+        return await message.answer(f"❌ Недостаточно Stars! Баланс: {db[uid]['balance']}")
 
     target_id = await resolve_id(target_input)
-    if not target_id:
-        return await message.answer("❌ Пользователь не найден. Введите @username или ID.")
+    if not target_id: return await message.answer("❌ Пользователь не найден.")
 
     try:
-        # Отправка (is_anonymous всегда False)
-        await bot.send_gift(
-            user_id=target_id,
-            gift_id=gift_id,
-            text=gift_msg,
-            is_anonymous=False
-        )
-        
-        # Списываем баланс только обычным пользователям
-        if int(uid) != ADMIN_ID:
-            db[uid]["balance"] -= GIFT_PRICE
-            
+        await bot.send_gift(user_id=target_id, gift_id=gift_id, text=gift_msg, is_anonymous=False)
+        if int(uid) != ADMIN_ID: db[uid]["balance"] -= GIFT_PRICE
         db[uid]["sent_count"] += 1
         db[uid]["history"].append(f"🎁 {gift_id} -> {target_input}")
         save_db(db)
-        
         await message.answer(f"✅ Подарок успешно отправлен!")
-        
     except Exception as e:
-        await message.answer(f"❌ Ошибка API: {e}\n(Убедись, что на балансе аккаунта есть 50 Stars)")
+        await message.answer(f"❌ Ошибка API: {e}")
 
 async def main():
     await set_commands(bot)
