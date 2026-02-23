@@ -10,10 +10,10 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, BotCommand
 
 # --- КОНФИГУРАЦИЯ ---
 TOKEN = "7714657648:AAH1zEV5p2gHHowtYnKHkMnIYX88UirHeGs"
-ADMIN_ID = 123456789  # ОБЯЗАТЕЛЬНО ПОСТАВЬ СВОЙ ID
+ADMIN_ID = 123456789  # ЗАМЕНИ НА СВОЙ ID
 DB_FILE = "gift_db.json"
 PERCENT_FEE = 0.15      
-GIFT_PRICE = 50         
+GIFT_PRICE = 50  # Стоимость отправки одного подарка через бота (если нужно)
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 bot = Bot(token=TOKEN)
@@ -36,24 +36,14 @@ def init_user(db, user_id):
         db[uid] = {"balance": 0, "history": [], "sent_count": 0}
     return db
 
-async def resolve_id(text):
-    text = text.strip()
-    if text.isdigit(): return int(text)
-    if text.startswith("@"):
-        try:
-            chat = await bot.get_chat(text)
-            return chat.id
-        except: return None
-    return None
-
 # --- МЕНЮ КОМАНД ---
 async def set_commands(bot: Bot):
     commands = [
         BotCommand(command="start", description="Запустить бота"),
         BotCommand(command="balance", description="Мой баланс 💰"),
         BotCommand(command="profile", description="Личный кабинет 👤"),
-        BotCommand(command="history", description="История подарков 📜"),
-        BotCommand(command="topup", description="Пополнить баланс ⭐"),
+        BotCommand(command="history", description="История 📜"),
+        BotCommand(command="topup", description="Пополнить ⭐️"),
         BotCommand(command="help", description="Инструкция 📖")
     ]
     await bot.set_my_commands(commands)
@@ -63,112 +53,145 @@ async def cmd_start(message: types.Message):
     db = load_db()
     init_user(db, message.from_user.id)
     save_db(db)
-    await message.answer("🚀 Бот активирован!\nВсе функции доступны через меню команд /.")
+    await message.answer("🚀 **Бот готов к отправке подарков!**\n\nИспользуйте меню или команду /help для ознакомления с форматом.")
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
     instruction = (
-        "📖 **Инструкция:**\n\n"
-        "1️⃣ Найти ID подарков: @GiftExcuseId\n"
-        "2️⃣ Пополнить баланс: `/topup 100` (Комиссия: 15%)\n"
-        "3️⃣ Отправить подарок (формат):\n"
-        "`ID_пользователя ID_подарка Сообщение`"
+        "📖 **Инструкция по отправке подарка:**\n\n"
+        "Отправьте сообщение в формате:\n"
+        "`ID_пользователя ID_подарка Сообщение` (сообщение не обязательно)\n\n"
+        "**Пример:**\n"
+        "`12345678 999 С днем рождения!`\n\n"
+        "📌 *Где взять ID подарка?* Обычно в специальных каналах или через @GiftExcuseId.\n"
+        "📌 *Стоимость отправки:* 50 Stars (с баланса бота)."
     )
     await message.answer(instruction, parse_mode="Markdown")
 
-# --- ВКЛАДКА БАЛАНСА ---
+# --- ПРОФИЛЬ И БАЛАНС ---
 @dp.message(Command("balance"))
 async def cmd_balance(message: types.Message):
     db = load_db()
-    uid = str(message.from_user.id)
-    user = db.get(uid, {"balance": 0})
+    user = init_user(db, message.from_user.id)[str(message.from_user.id)]
     
-    if int(uid) == ADMIN_ID:
-        text = "💰 **Ваш баланс:**\nИспользуются 50 Stars на аккаунте (Admin Access)."
+    if message.from_user.id == ADMIN_ID:
+        await message.answer(f"💰 **Баланс:** Безлимит (Admin)\nДоступно Stars на аккаунте бота.")
     else:
-        text = f"💰 **Ваш баланс:** {user['balance']} Stars"
-    
-    await message.answer(text, parse_mode="Markdown")
+        await message.answer(f"💰 **Ваш баланс:** {user['balance']} Stars")
 
 @dp.message(Command("profile"))
 async def cmd_profile(message: types.Message):
     db = load_db()
     uid = str(message.from_user.id)
-    user = db.get(uid, {"balance": 0, "sent_count": 0})
-    
-    if int(uid) == ADMIN_ID:
-        balance_info = "Готов (Admin)"
-    else:
-        balance_info = f"{user['balance']} Stars"
+    user = init_user(db, uid)[uid]
     
     text = (
         f"👤 **Личный кабинет**\n\n"
-        f"🆔 ID: `{uid}`\n"
-        f"💰 Баланс: **{balance_info}**\n"
-        f"🎁 Отправлено: {user['sent_count']}"
+        f"🆔 Ваш ID: `{uid}`\n"
+        f"💰 Баланс: **{user['balance'] if int(uid) != ADMIN_ID else '∞'}**\n"
+        f"🎁 Отправлено подарков: {user['sent_count']}"
     )
     await message.answer(text, parse_mode="Markdown")
 
 @dp.message(Command("history"))
 async def cmd_history(message: types.Message):
     db = load_db()
-    history = db.get(str(message.from_user.id), {}).get("history", [])
-    if not history: return await message.answer("📜 Твоя история пуста.")
-    await message.answer("📜 **Последние подарки:**\n\n" + "\n".join(history[-10:]), parse_mode="Markdown")
+    user = init_user(db, message.from_user.id)[str(message.from_user.id)]
+    if not user["history"]: 
+        return await message.answer("📜 Ваша история подарков пока пуста.")
+    
+    history_text = "\n".join(user["history"][-10:])
+    await message.answer(f"📜 **Последние 10 отправлений:**\n\n{history_text}", parse_mode="Markdown")
 
+# --- ПОПОЛНЕНИЕ ---
 @dp.message(Command("topup"))
 async def cmd_topup(message: types.Message):
     parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit(): return await message.answer("⚠️ Пример: `/topup 100`")
+    if len(parts) < 2 or not parts[1].isdigit(): 
+        return await message.answer("⚠️ Формат: `/topup 100` (где 100 — сумма зачисления)")
+    
     amount = int(parts[1])
-    total = amount + math.ceil(amount * PERCENT_FEE)
-    await bot.send_invoice(message.chat.id, title="Пополнение Stars", description=f"Зачисление: {amount} ⭐", payload=f"up_{amount}", currency="XTR", prices=[LabeledPrice(label="Stars", amount=total)])
+    total_to_pay = amount + math.ceil(amount * PERCENT_FEE)
+    
+    await bot.send_invoice(
+        message.chat.id,
+        title="Пополнение баланса",
+        description=f"Зачисление {amount} Stars на внутренний баланс.",
+        payload=f"topup_{amount}",
+        currency="XTR",
+        prices=[LabeledPrice(label="Stars", amount=total_to_pay)]
+    )
 
 @dp.pre_checkout_query()
-async def pre_checkout(query: PreCheckoutQuery):
+async def process_pre_checkout(query: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(query.id, ok=True)
 
 @dp.message(F.successful_payment)
-async def success_pay(message: types.Message):
+async def on_success_pay(message: types.Message):
     db = load_db()
     uid = str(message.from_user.id)
+    init_user(db, uid)
+    
     amount = int(message.successful_payment.invoice_payload.split("_")[1])
     db[uid]["balance"] += amount
     save_db(db)
-    await message.answer(f"✅ Баланс пополнен на **{amount} Stars**!")
-
-@dp.message(F.text & ~F.text.startswith('/'))
-async def handle_gift_sending(message: types.Message):
-    parts = message.text.strip().split()
-    if len(parts) < 2: return 
-
-    target_input, gift_id = parts[0], parts[1]
-    gift_msg = " ".join(parts[2:]) if len(parts) > 2 else ""
     
+    await message.answer(f"✅ Успешно! Вам зачислено **{amount} Stars**.")
+
+# --- ЛОГИКА ОТПРАВКИ ПОДАРКА ---
+@dp.message(F.text & ~F.text.startswith('/'))
+async def handle_gift_transfer(message: types.Message):
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 2:
+        return # Игнорируем простые сообщения
+
+    target_id_raw = parts[0]
+    gift_id = parts[1]
+    text_note = parts[2] if len(parts) > 2 else ""
+
+    # Проверка ID получателя
+    if not target_id_raw.isdigit():
+        return await message.answer("❌ ID пользователя должен состоять из цифр.")
+    
+    target_id = int(target_id_raw)
     db = load_db()
     uid = str(message.from_user.id)
     init_user(db, uid)
 
+    # Проверка баланса (админу бесплатно)
     if int(uid) != ADMIN_ID and db[uid]["balance"] < GIFT_PRICE:
-        return await message.answer(f"❌ Недостаточно Stars! Баланс: {db[uid]['balance']}")
-
-    target_id = await resolve_id(target_input)
-    if not target_id: return await message.answer("❌ Пользователь не найден.")
+        return await message.answer(f"❌ Недостаточно средств. Нужно: {GIFT_PRICE} Stars.\nВаш баланс: {db[uid]['balance']}")
 
     try:
-        await bot.send_gift(user_id=target_id, gift_id=gift_id, text=gift_msg, is_anonymous=False)
-        if int(uid) != ADMIN_ID: db[uid]["balance"] -= GIFT_PRICE
-        db[uid]["sent_count"] += 1
-        db[uid]["history"].append(f"🎁 {gift_id} -> {target_input}")
-        save_db(db)
-        await message.answer(f"✅ Подарок успешно отправлен!")
-    except Exception as e:
-        await message.answer(f"❌ Ошибка API: {e}")
+        # Основной метод Telegram API для отправки подарка
+        await bot.send_gift(
+            user_id=target_id,
+            gift_id=gift_id,
+            text=text_note
+        )
 
+        # Списание и логгирование
+        if int(uid) != ADMIN_ID:
+            db[uid]["balance"] -= GIFT_PRICE
+        
+        db[uid]["sent_count"] += 1
+        db[uid]["history"].append(f"🎁 Подарок `{gift_id}` для ID `{target_id}`")
+        save_db(db)
+
+        await message.answer(f"✅ Подарок успешно отправлен пользователю `{target_id}`!")
+
+    except Exception as e:
+        logging.error(f"Gift Error: {e}")
+        await message.answer(f"❌ Ошибка при отправке: {str(e)}\n\n*Убедитесь, что ID подарка верный и бот имеет Stars на счету.*")
+
+# --- ЗАПУСК ---
 async def main():
     await set_commands(bot)
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
